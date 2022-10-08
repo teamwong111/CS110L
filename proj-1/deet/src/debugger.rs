@@ -2,6 +2,7 @@ use crate::debugger_command::DebuggerCommand;
 use crate::inferior::Inferior;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use crate::inferior::Status;
 
 pub struct Debugger {
     target: String,
@@ -35,9 +36,7 @@ impl Debugger {
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
-                        // TODO (milestone 1): make the inferior run
-                        // You may use self.inferior.as_mut().unwrap() to get a mutable reference
-                        // to the Inferior object
+                        self.with_continue();
                     } else {
                         println!("Error starting subprocess");
                     }
@@ -47,6 +46,22 @@ impl Debugger {
                 }
             }
         }
+    }
+
+    pub fn with_continue(&mut self) {
+        match self.inferior.as_mut().unwrap().continue_run().unwrap() {
+            Status::Exited(exit_code) => {
+                println!("Child exited (status {})", exit_code);
+                self.inferior = None;
+            }
+            Status::Signaled(signal) => {
+                println!("Child exited due to signal {}", signal);
+                self.inferior = None;
+            }
+            Status::Stopped(signal, _) => {
+                println!("Child stopped (signal {})", signal)
+            }
+        }   
     }
 
     /// This function prompts the user to enter a command, and continues re-prompting until the user
