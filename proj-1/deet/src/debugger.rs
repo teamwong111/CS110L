@@ -93,8 +93,10 @@ impl Debugger {
                 println!("Child exited due to signal {}", signal);
                 self.inferior = None;
             }
-            Status::Stopped(signal, _) => {
-                println!("Child stopped (signal {})", signal)
+            Status::Stopped(signal, rip) => {
+                println!("Child stopped (signal {})", signal);
+                let line = DwarfData::get_line_from_addr(&self.debug_data, rip).unwrap();
+                println!("Stopped at {}:{}", line.file, line.number);
             }
         }   
     }
