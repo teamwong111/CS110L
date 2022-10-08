@@ -10,7 +10,8 @@ fn main() {
 }
 ```
 
-
+// Compile: no. because `ref1` still holds a reference to `s`, `s` can't be assigned to a new value as it would invalidate the reference.
+// Solution: `let ref1 = &s; -> let ref1 = s;`. ref1 `gets` "hello" ownership, `s` is assigned "goodbye", print "HELLO".
 
 Example 2:
 ```
@@ -20,7 +21,8 @@ fn drip_drop() -> &String {
 }
 ```
 
-
+// Compile: no. because s is droped when leaving this function, the reference will point to an invalid String.
+// Solution: `return &s; -> return s;`.
 
 Example 3:
 ```
@@ -32,3 +34,6 @@ fn main() {
     println!("{}", s2);
 }
 ```
+
+// Compile: no. because String doesn't have Copy trait.
+// Solution: `let s2: String = v[0]; -> let s2: &String = &v[0];`
