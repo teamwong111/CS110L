@@ -6,6 +6,7 @@ use std::os::unix::process::CommandExt;
 use std::process::Child;
 use std::process::Command;
 use crate::dwarf_data::DwarfData;
+use std::mem::size_of;
 
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
@@ -36,12 +37,21 @@ pub struct Inferior {
 impl Inferior {
     /// Attempts to start a new inferior process. Returns Some(Inferior) if successful, or None if
     /// an error is encountered.
-    pub fn new(target: &str, args: &Vec<String>) -> Option<Inferior> {
+    pub fn new(target: &str, args: &Vec<String>, break_points: &Vec<usize>) -> Option<Inferior> {
         let mut cmd = Command::new(target);
         cmd.args(args);
         unsafe { cmd.pre_exec(child_traceme); }
         let child = cmd.spawn().ok()?;
-        let inferior = Inferior {child: child};
+        let mut inferior = Inferior {child: child};
+        if inferior.wait(None).is_ok() {
+            let bps = break_points.clone();
+            for bp in bps {
+                match inferior.write_byte(bp, 0xcc) {
+                    Ok(_) => continue,
+                    Err(_) => println!("Invalid breakpoint address {:#x}", bp),
+                }
+            }
+        }
         Some(inferior)
     }
 
@@ -74,14 +84,32 @@ impl Inferior {
         let mut instruction_ptr = regs.rip as usize;
         let mut base_ptr = regs.rbp as usize;
         loop {
-            let line = DwarfData::get_line_from_addr(debug_data, instruction_ptr).unwrap();
-            let func = DwarfData::get_function_from_addr(debug_data, instruction_ptr).unwrap();
+            let line = debug_data.get_line_from_addr(instruction_ptr).unwrap();
+            let func = debug_data.get_function_from_addr(instruction_ptr).unwrap();
             println!("{} ({}:{})", func, line.file, line.number);
             if func == "main" { break }
             instruction_ptr = ptrace::read(self.pid(), (base_ptr + 8) as ptrace::AddressType)? as usize;
             base_ptr = ptrace::read(self.pid(), base_ptr as ptrace::AddressType)? as usize;
         }
         Ok(())
+    }
+
+    pub fn write_byte(&mut self, addr: usize, val: u8) -> Result<u8, nix::Error> {
+        fn align_addr_to_word(addr: usize) -> usize {
+            addr & (-(size_of::<usize>() as isize) as usize)
+        }
+        let aligned_addr = align_addr_to_word(addr);
+        let byte_offset = addr - aligned_addr;
+        let word = ptrace::read(self.pid(), aligned_addr as ptrace::AddressType)? as u64;
+        let orig_byte = (word >> 8 * byte_offset) & 0xff;
+        let masked_word = word & !(0xff << 8 * byte_offset);
+        let updated_word = masked_word | ((val as u64) << 8 * byte_offset);
+        ptrace::write(
+            self.pid(),
+            aligned_addr as ptrace::AddressType,
+            updated_word as *mut std::ffi::c_void,
+        )?;
+        Ok(orig_byte as u8)
     }
 
     pub fn kill(&mut self) {

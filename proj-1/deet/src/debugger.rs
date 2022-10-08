@@ -10,7 +10,8 @@ pub struct Debugger {
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
-    debug_data: DwarfData, 
+    debug_data: DwarfData,
+    break_points: Vec<usize>,
 }
 
 impl Debugger {
@@ -32,13 +33,15 @@ impl Debugger {
         let mut readline = Editor::<()>::new();
         // Attempt to load history from ~/.deet_history if it exists
         let _ = readline.load_history(&history_path);
-
+        
+        debug_data.print();
         Debugger {
             target: target.to_string(),
             history_path,
             readline,
             inferior: None,
             debug_data: debug_data,
+            break_points: Vec::<usize>::new(),
         }
     }
 
@@ -50,7 +53,7 @@ impl Debugger {
                         self.inferior.as_mut().unwrap().kill();
                         self.inferior = None;
                     }
-                    if let Some(inferior) = Inferior::new(&self.target, &args) {
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.break_points) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         self.with_continue();
@@ -74,6 +77,24 @@ impl Debugger {
                         self.inferior.as_mut().unwrap().print_backtrace(&self.debug_data).ok();
                     }
                 }
+                DebuggerCommand::Break(args) => {
+                    fn parse_address(addr: &str) -> Option<usize> {
+                        let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+                            &addr[2..]
+                        } else {
+                            &addr
+                        };
+                        usize::from_str_radix(addr_without_0x, 16).ok()
+                    }
+                    let break_point = parse_address(&args[1..]).unwrap();
+                    self.break_points.push(break_point);
+                    if self.inferior.is_some() {
+                        match self.inferior.as_mut().unwrap().write_byte(break_point, 0xcc) {
+                            Err(_) => { println!("Invalid breakpoint address {:#x}", break_point) }
+                            Ok(_) => { () }
+                        }
+                    }
+                }
                 DebuggerCommand::Quit => {
                     self.inferior.as_mut().unwrap().kill();
                     self.inferior = None;
@@ -95,8 +116,11 @@ impl Debugger {
             }
             Status::Stopped(signal, rip) => {
                 println!("Child stopped (signal {})", signal);
-                let line = DwarfData::get_line_from_addr(&self.debug_data, rip).unwrap();
-                println!("Stopped at {}:{}", line.file, line.number);
+                let line = self.debug_data.get_line_from_addr(rip);
+                match line {
+                    None => { println!("Legacy bugs, rip is {:#x}", rip); }
+                    Some(_line) => { println!("Stopped at {}:{}", _line.file, _line.number); }
+                }
             }
         }   
     }
