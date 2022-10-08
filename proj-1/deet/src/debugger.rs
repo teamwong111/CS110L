@@ -33,6 +33,10 @@ impl Debugger {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
+                    if self.inferior.is_some() {
+                        self.inferior.as_mut().unwrap().kill();
+                        self.inferior = None;
+                    }
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
@@ -41,7 +45,17 @@ impl Debugger {
                         println!("Error starting subprocess");
                     }
                 }
+                DebuggerCommand::Continue => {
+                    if self.inferior.is_none() {
+                        println!("No process is running");
+                    }
+                    else {
+                        self.with_continue();
+                    }
+                }
                 DebuggerCommand::Quit => {
+                    self.inferior.as_mut().unwrap().kill();
+                    self.inferior = None;
                     return;
                 }
             }
