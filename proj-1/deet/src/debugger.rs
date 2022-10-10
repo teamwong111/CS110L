@@ -79,15 +79,33 @@ impl Debugger {
                     }
                 }
                 DebuggerCommand::Break(args) => {
-                    fn parse_address(addr: &str) -> Option<usize> {
+                    fn parse_address(addr: &str, radix: u32) -> Option<usize> {
                         let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
                             &addr[2..]
                         } else {
                             &addr
                         };
-                        usize::from_str_radix(addr_without_0x, 16).ok()
+                        usize::from_str_radix(addr_without_0x, radix).ok()
                     }
-                    let addr = parse_address(&args[1..]).unwrap();
+                    let mut addr = 0;
+                    if args.starts_with('*') {
+                        addr = parse_address(&args[1..], 16).unwrap();
+                    }
+                    else {
+                        if let Some(line_number) = parse_address(&args, 10) {
+                            println!("{}", line_number);
+                            addr = self.debug_data.get_addr_for_line(None, line_number).unwrap();
+                        }
+                        else {
+                            if let Some(af) = self.debug_data.get_addr_for_function(None, &args) {
+                                addr = af;
+                            }
+                            else {
+                                println!("illegal args {} for breakpoint", args)
+                            }
+                        }
+                    }
+                    
                     if self.inferior.is_some() {
                         match self.inferior.as_mut().unwrap().write_byte(addr, 0xcc) {
                             Err(_) => { println!("Invalid breakpoint address {:#x}", addr) }
