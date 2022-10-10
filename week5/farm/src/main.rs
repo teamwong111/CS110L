@@ -72,10 +72,30 @@ fn main() {
     let start = Instant::now();
 
     // TODO: call get_input_numbers() and store a queue of numbers to factor
-
+    let numbers: Arc<Mutex<VecDeque<u32>>> = Arc::new(Mutex::new(get_input_numbers()));
     // TODO: spawn `num_threads` threads, each of which pops numbers off the queue and calls
     // factor_number() until the queue is empty
-
+    let mut threads = Vec::new();
+    for _ in 0..num_threads {
+        let numbers = numbers.clone();
+        threads.push(thread::spawn(move || {
+            loop {
+                let opt_num: Option<u32>;
+                {
+                    let mut numbers_ref = numbers.lock().unwrap();
+                    opt_num = numbers_ref.pop_front();
+                }
+                match opt_num {
+                    Some(num) => factor_number(num),
+                    None => return
+                }
+            }
+        }));
+    }
+    // wait for all the threads to finish
+    for handle in threads {
+        handle.join().expect("Panic occurred in thread!");
+    }
     // TODO: join all the threads you created
 
     println!("Total execution time: {:?}", start.elapsed());
