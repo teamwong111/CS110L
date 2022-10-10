@@ -2,6 +2,7 @@ use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
+use std::collections::HashMap;
 use std::os::unix::process::CommandExt;
 use std::process::Child;
 use std::process::Command;
@@ -37,18 +38,17 @@ pub struct Inferior {
 impl Inferior {
     /// Attempts to start a new inferior process. Returns Some(Inferior) if successful, or None if
     /// an error is encountered.
-    pub fn new(target: &str, args: &Vec<String>, break_points: &Vec<usize>) -> Option<Inferior> {
+    pub fn new(target: &str, args: &Vec<String>, break_points: &mut HashMap<usize, u8>) -> Option<Inferior> {
         let mut cmd = Command::new(target);
         cmd.args(args);
         unsafe { cmd.pre_exec(child_traceme); }
         let child = cmd.spawn().ok()?;
         let mut inferior = Inferior {child: child};
         if inferior.wait(None).is_ok() {
-            let bps = break_points.clone();
-            for bp in bps {
-                match inferior.write_byte(bp, 0xcc) {
-                    Ok(_) => continue,
-                    Err(_) => println!("Invalid breakpoint address {:#x}", bp),
+            for (addr, ob) in break_points {
+                match inferior.write_byte(*addr, 0xcc) {
+                    Ok(orig_byte) => { *ob = orig_byte }
+                    Err(_) => { println!("Invalid breakpoint address {:#x}", addr) }
                 }
             }
         }
@@ -74,7 +74,20 @@ impl Inferior {
         })
     }
 
-    pub fn continue_run(&self) -> Result<Status, nix::Error> {
+    pub fn continue_run(&mut self, breakpoints: &HashMap<usize, u8>) -> Result<Status, nix::Error> {
+        let mut regs = ptrace::getregs(self.pid())?;
+        let rip = regs.rip as usize;
+        if let Some(orig_byte) = breakpoints.get(&(rip - 1)) {
+            self.write_byte(rip - 1, *orig_byte).unwrap();
+            regs.rip = (rip - 1) as u64;
+            ptrace::setregs(self.pid(), regs).unwrap();
+            ptrace::step(self.pid(), None).unwrap();
+            match self.wait(None).unwrap() {
+                Status::Exited(exit_code) => { return Ok(Status::Exited(exit_code)) }
+                Status::Signaled(signal) => { return Ok(Status::Signaled(signal)) }
+                Status::Stopped(_, _) => { self.write_byte(rip - 1, 0xcc).unwrap(); }
+            }
+        }
         ptrace::cont(self.pid(), None)?;
         self.wait(None)
     }

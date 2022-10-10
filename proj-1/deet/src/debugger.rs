@@ -4,6 +4,7 @@ use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use crate::inferior::Status;
 use crate::dwarf_data::{DwarfData, Error as DwarfError};
+use std::collections::HashMap;
 
 pub struct Debugger {
     target: String,
@@ -11,7 +12,7 @@ pub struct Debugger {
     readline: Editor<()>,
     inferior: Option<Inferior>,
     debug_data: DwarfData,
-    break_points: Vec<usize>,
+    break_points: HashMap<usize, u8>,
 }
 
 impl Debugger {
@@ -41,7 +42,7 @@ impl Debugger {
             readline,
             inferior: None,
             debug_data: debug_data,
-            break_points: Vec::<usize>::new(),
+            break_points: HashMap::new(),
         }
     }
 
@@ -53,7 +54,7 @@ impl Debugger {
                         self.inferior.as_mut().unwrap().kill();
                         self.inferior = None;
                     }
-                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.break_points) {
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &mut self.break_points) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         self.with_continue();
@@ -86,13 +87,15 @@ impl Debugger {
                         };
                         usize::from_str_radix(addr_without_0x, 16).ok()
                     }
-                    let break_point = parse_address(&args[1..]).unwrap();
-                    self.break_points.push(break_point);
+                    let addr = parse_address(&args[1..]).unwrap();
                     if self.inferior.is_some() {
-                        match self.inferior.as_mut().unwrap().write_byte(break_point, 0xcc) {
-                            Err(_) => { println!("Invalid breakpoint address {:#x}", break_point) }
-                            Ok(_) => { () }
+                        match self.inferior.as_mut().unwrap().write_byte(addr, 0xcc) {
+                            Err(_) => { println!("Invalid breakpoint address {:#x}", addr) }
+                            Ok(orig_byte) => { self.break_points.insert(addr, orig_byte); }
                         }
+                    }
+                    else {
+                        self.break_points.insert(addr, 0);
                     }
                 }
                 DebuggerCommand::Quit => {
@@ -105,7 +108,7 @@ impl Debugger {
     }
 
     pub fn with_continue(&mut self) {
-        match self.inferior.as_mut().unwrap().continue_run().unwrap() {
+        match self.inferior.as_mut().unwrap().continue_run(&self.break_points).unwrap() {
             Status::Exited(exit_code) => {
                 println!("Child exited (status {})", exit_code);
                 self.inferior = None;
