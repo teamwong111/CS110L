@@ -1,6 +1,7 @@
 mod request;
 mod response;
-
+use std::thread;
+use std::sync::Arc;
 use clap::Parser;
 use rand::{Rng, SeedableRng};
 use std::net::{TcpListener, TcpStream};
@@ -90,11 +91,19 @@ fn main() {
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
     };
+    let mut threads = Vec::new();
+    let shared_state = Arc::new(state);
     for stream in listener.incoming() {
         if let Ok(stream) = stream {
             // Handle the connection!
-            handle_connection(stream, &state);
+            let shared_state = shared_state.clone();
+            threads.push(thread::spawn(move || {
+                handle_connection(stream, &shared_state);
+            }));
         }
+    }
+    for handle in threads {
+        handle.join().expect("Panic occurred in thread!");
     }
 }
 
