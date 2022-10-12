@@ -4,8 +4,8 @@ use std::{sync::Arc, collections::HashMap};
 use clap::Parser;
 use rand::{Rng, SeedableRng};
 use tokio::{net::{TcpListener, TcpStream}, stream::StreamExt};
-use tokio::sync::RwLock;
-use std::io::{ErrorKind};
+use tokio::sync::{RwLock, Mutex};
+use std::io::ErrorKind;
 use std::time::Duration;
 use tokio::time::delay_for;
 
@@ -60,6 +60,7 @@ struct ProxyState {
     /// Addresses of servers that we are proxying to
     upstream_addresses: Vec<String>,
     failed_indexs: RwLock<HashMap<usize, bool>>,
+    rate_limit_counter: Mutex<HashMap<String, usize>>,
 }
 
 #[tokio::main]
@@ -95,13 +96,22 @@ async fn main() {
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
-        failed_indexs: RwLock::new(HashMap::new())
+        failed_indexs: RwLock::new(HashMap::new()),
+        rate_limit_counter: Mutex::new(HashMap::new()),
     };
     let shared_state = Arc::new(state);
     let state_clone = shared_state.clone();
     tokio::spawn(async move {
         _ = active_health_checks(&state_clone).await;
     });
+
+    if shared_state.max_requests_per_minute > 0 {
+        let state_clone1 = shared_state.clone();
+        tokio::spawn(async move {
+            rate_limit_counter_refresher(&state_clone1, 60).await;
+        });
+    }
+
     let mut incoming = listener.incoming();
     while let Some(stream) = incoming.next().await {
         if let Ok(stream) = stream {
@@ -112,6 +122,12 @@ async fn main() {
             });
         }
     }
+}
+
+async fn rate_limit_counter_refresher(state: &ProxyState, interval: u64) {
+    delay_for(Duration::from_secs(interval)).await;
+    let mut rate_limit_counter = state.rate_limit_counter.lock().await;
+    rate_limit_counter.clear();
 }
 
 async fn connect_to_deterministic_upstream(upstream_idx: usize, state: &ProxyState) -> Result<TcpStream, std::io::Error> {
@@ -248,6 +264,16 @@ async fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
             upstream_ip,
             request::format_request_line(&request)
         );
+
+        let mut rate_limit_counter = state.rate_limit_counter.lock().await;
+        let ip = client_conn.peer_addr().unwrap().ip().to_string();
+        let count = rate_limit_counter.entry(ip).or_insert(0);
+        *count += 1;
+        if *count > state.max_requests_per_minute {
+            let response = response::make_http_error(http::StatusCode::TOO_MANY_REQUESTS);
+            response::write_to_stream(&response, &mut client_conn).await.unwrap();
+            continue;
+        }
 
         // Add X-Forwarded-For header so that the upstream server knows the client's IP address.
         // (We're the ones connecting directly to the upstream server, so without this header, the
