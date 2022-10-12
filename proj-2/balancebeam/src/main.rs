@@ -6,6 +6,8 @@ use rand::{Rng, SeedableRng};
 use tokio::{net::{TcpListener, TcpStream}, stream::StreamExt};
 use tokio::sync::RwLock;
 use std::io::{ErrorKind};
+use std::time::Duration;
+use tokio::time::delay_for;
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Clap macros
 /// provide a fancy way to automatically construct a command-line argument parser.
@@ -96,6 +98,10 @@ async fn main() {
         failed_indexs: RwLock::new(HashMap::new())
     };
     let shared_state = Arc::new(state);
+    let state_clone = shared_state.clone();
+    tokio::spawn(async move {
+        _ = active_health_checks(&state_clone).await;
+    });
     let mut incoming = listener.incoming();
     while let Some(stream) = incoming.next().await {
         if let Ok(stream) = stream {
@@ -104,6 +110,45 @@ async fn main() {
             tokio::spawn(async move {
                 handle_connection(stream, &shared_state).await;
             });
+        }
+    }
+}
+
+async fn connect_to_deterministic_upstream(upstream_idx: usize, state: &ProxyState) -> Result<TcpStream, std::io::Error> {
+    let upstream_ip = &state.upstream_addresses[upstream_idx];
+    match TcpStream::connect(upstream_ip).await {
+        Ok(stream) => return Ok(stream),
+        Err(err) => {
+            log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
+            return Err(err);
+        }
+    }
+}
+
+async fn active_health_checks(state: &ProxyState) -> Result<(), std::io::Error> {
+    loop {
+        delay_for(Duration::from_secs(state.active_health_check_interval as u64)).await;
+        let mut wfi = state.failed_indexs.write().await;
+        for i in 0..state.upstream_addresses.len() {
+            let mut stream = connect_to_deterministic_upstream(i, &state).await?;
+            let request = http::Request::builder()
+            .method(http::Method::GET)
+            .uri(&state.active_health_check_path)
+            .header("Host", &state.upstream_addresses[i])
+            .body(Vec::new())
+            .unwrap();
+            request::write_to_stream(&request, &mut stream).await?;
+            match response::read_from_stream(&mut stream, &http::Method::GET).await {
+                Err(_) => {}
+                Ok(res) => {
+                    if res.status().as_u16() == 200 {
+                        wfi.remove(&i);
+                    }
+                    else {
+                        wfi.insert(i, true);
+                    }
+                }
+            }
         }
     }
 }
